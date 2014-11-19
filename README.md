@@ -12,10 +12,8 @@ blast_result <- read_blast_m9("result.blastn")
 sequence_table <- seq_length_tbl("file.fasta")
 ```
 
-3. Create new filtered table.
-```
-warp_tbl(blast_result, sequence_table, n = 3, bit_score > 400)
-```
+3. 
+Read the [vignette](http://www.cbcb.umd.edu/~kross/warppipe/) :notebook: .
 
 ## Installation
 ```

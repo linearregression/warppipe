@@ -14,7 +14,6 @@ Sean Kross
 }
 \seealso{
 \itemize{
-\item \code{\link{warp_tbl}}
 \item \code{\link{seq_tbl}}
 \item \code{\link{seq_length_tbl}}
 \item \code{\link{read_blast_m9}}

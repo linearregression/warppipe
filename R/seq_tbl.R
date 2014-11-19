@@ -24,8 +24,10 @@ seq_tbl <- function(path, description = "^>", comment = "^;"){
   # Trim whitespace
   fasta_file <- str_trim(fasta_file)
   
-  # Remove description lines
-  fasta_file <- fasta_file[-grep(comment, fasta_file)]
+  # Remove comment lines
+  if(any(grepl(comment, fasta_file))){
+    fasta_file <- fasta_file[-grep(comment, fasta_file)]
+  }
   
   # Find lines with descriptions
   description_lines <- grep(description, fasta_file)

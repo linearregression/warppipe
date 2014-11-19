@@ -1,50 +1,63 @@
-#' Filter out promising blast hits given data frames created from other 
-#' functions in this package.
+#' Given a data frame and two column names, this function returns a data frame
+#' where groupings of the first variable contain differences with respect to the
+#' second variable.
 #' 
-#' @param blast A data frame converted from a blast result by using the function
-#'  read_blast_m9().
-#' @param tbl A data frame of a fasta file converted using seq_length_tbl(). 
-#' @param n The top n hits to be returned.
-#' @param ... Logical conditions to further filter the table. Combine conditions
-#'  with \code{&}.
+#' @param tbl A data frame with at least two columns
+#' @param grouping The column name specifying how to group the rows.
+#' @param warp_by The column name specifying the differences within groups to look for.
 #' @export
-#' @importFrom dplyr left_join mutate_ filter arrange_ desc group_by_ slice %>%
+#' @importFrom dplyr %>%
 #' @examples
 #' \dontrun{
 #' 
-#' # Setup 
-#' blast_result <- read_blast_m9("result.blastn")
-#' sequence_table <- seq_length_tbl("db.fasta")
-#' 
-#' # Get top hit for each query
-#' warp_tbl(blast_result, sequence_table)
-#' 
-#' # Get top 5 hits for each query
-#' warp_tbl(blast_result, sequence_table, n = 5)
-#' 
-#' # Get top 3 hits for each query where bit_score is greater than 400.
-#' warp_tbl(blast_result, sequence_table, n = 3, bit_score > 400)
+#' fruit_prices <- data.frame(Fruit = c("Apple", "Apple", "Orange", "Orange", "Pear", "Pear"),
+#'                            Price = c(1.2, 1.3, 1.1, 1.1, 1.4, 1.1))
+#' warp_tbl(fruit_prices, "Fruit", "Price")
+#' warp_tbl(fruit_prices, "Price", "Fruit")
 #' 
 #' }
 
-warp_tbl <- function(blast, tbl, n = 1, ...){
-  blast %>%
-    
-    # Join sequence lengths
-    left_join(tbl) %>%
-    
-    # Create new column: percent_total_identity
-    mutate_(~(percent_total_identity = (alignment_length - mismatches) / sequence_length)) %>%
-    
-    # Filter further
-    filter(...) %>%
-    
-    # List hits from highest to lowest
-    arrange_(desc(~percent_total_identity)) %>%
-    
-    # Group hits by query id
-    group_by_(~Query_id) %>%
-    
-    # Select top n hits
-    slice(1:n)
+warp_tbl <- function(tbl, grouping, warp_by){
+  warped_tbl <- groupwise_heterogeneity(tbl, grouping)
+  warped_tbl <- warped_tbl %>% s_filter(paste0(warp_by, ">0"))
+  groups_to_filter_on <- as.vector(unlist(warped_tbl[grouping]))
+  tbl %>% 
+    s_filter(paste0(grouping, " %in% ", make_text_vector(groups_to_filter_on))) %>%
+    s_group_by(grouping) %>%
+    s_arrange(paste0("desc(", grouping, ")"))
+}
+
+make_text_vector <- function(vector){
+  characterize <- paste0("'", vector, "'")
+  cs_vector <- paste(characterize, collapse = ",")
+  paste0("c(", cs_vector, ")")
+}
+
+# Helper functions that allow string arguments for  dplyr's data modification
+# functions like arrange, select etc. 
+# Author: Sebastian Kranz
+# Source: https://gist.github.com/skranz/9681509
+
+# Modified version of dplyr's filter that uses string arguments
+s_filter = function(.data, ...) {
+  eval.string.dplyr(.data,"filter", ...)
+}
+
+# Modified version of dplyr's group_by that uses string arguments
+s_group_by = function(.data, ...) {
+  eval.string.dplyr(.data,"group_by", ...)
+}
+
+# Modified version of dplyr's arrange that uses string arguments
+s_arrange = function(.data, ...) {
+  eval.string.dplyr(.data,"arrange", ...)
+}
+
+# Internal function used by s_filter, s_select etc.
+eval.string.dplyr = function(.data, .fun.name, ...) {
+  args = list(...)
+  args = unlist(args)
+  code = paste0(.fun.name,"(.data,", paste0(args, collapse=","), ")")
+  df = eval(parse(text=code,srcfile=NULL))
+  df  
 }

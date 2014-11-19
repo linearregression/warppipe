@@ -1,0 +1,255 @@
+---
+title: "Warppipe Introduction"
+author: "Sean Kross"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Vignette Title}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\usepackage[utf8]{inputenc}
+---
+
+Warppipe is a phylogenetic annotation pipeline for biological sequences. In this
+vignette we'll walk through each step the pipeline while performing an analysis
+of the 16s ribosomal RNA sequences reported in a highly accessed metagenomic 
+study published in *Genome Biology*^[Pop, Mihai, et al. "Diarrhea in young 
+children from low-income countries leads to large-scale alterations in intestinal 
+microbiota composition." Genome biology 15.6 (2014): R76.]. Analysis with 
+Warppipe relies heavily on the dplyr package^[https://github.com/hadley/dplyr]. 
+If you're unfamiliar with dplyr I highly recommend browsing their [wonderful
+vignette](http://cran.r-project.org/web/packages/dplyr/vignettes/introduction.html). 
+
+## Getting data into Warppipe
+
+Results from a BLAST query can be read into Warppipe as long as the `-m 9` flag
+is used. Assuming that `file.fasta` contains sequences you wish to query with 
+BLAST, the following shell script will produce a file called `result.blastn`.
+
+```sh
+blastall -p blastn -i file.fasta -e 1 -v 10 -b 10 -o result.blastn -m 9
+```
+
+You can then import `result.blastn` as a data frame:
+
+```{r, eval=FALSE}
+library(warppipe)
+blast_result <- read_blast_m9("result.blastn")
+```
+
+If you want to import `file.fasta` as a data frame, you can import the sequences
+or just the lengths of each sequence mapped their respective description.
+
+```{r, eval=FALSE}
+# Import descriptions and sequences
+sequence_tbl <- seq_tbl("file.fasta")
+
+# Import descriptions and sequence lengths
+sequence_lengths <- seq_length_tbl("file.fasta")
+```
+
+## Getting data out of Warppipe
+
+If you have a data frame with descriptions and sequences, you can export it as
+a fasta file.
+
+```{r, eval=FALSE}
+tbl_to_fasta(sequences[1:10,], "first_ten_reads.fasta")
+```
+
+## "Warping" tables
+
+The crux of this package is the `warp_tbl()` function. Given a data frame with
+at least two columns, `warp_tbl()` will return groups specified by the `grouping`
+argument that have heterogeneous members with respect to the `warp_by` argument.
+Imagine I collected data about the price of different fruits at the beginning
+and end of a work week:
+
+```{r}
+fruit_prices <- data.frame(Day = c("Monday", "Friday", "Monday", "Friday", "Monday", "Friday"),
+                           Fruit = c("Apple", "Apple", "Orange", "Orange", "Pear", "Pear"),
+                           Price = c(1.2, 1.3, 1.1, 1.1, 1.4, 1.1))
+```
+
+```{r, echo=FALSE, results='asis'}
+knitr::kable(fruit_prices)
+```
+
+I could use `warp_tbl()` to see which fruits changed in price:
+
+```{r, echo=FALSE}
+library(warppipe)
+```
+
+```{r, eval=FALSE}
+delta_fruit <- warp_tbl(fruit_prices, "Fruit", "Price")
+```
+
+```{r, echo=FALSE, results='asis'}
+knitr::kable(fruit_prices[c(1, 2, 5, 6),])
+```
+
+Or I could use `warp_tbl()` to see which fruit have the same price:
+
+```{r, eval=FALSE}
+delta_price <- warp_tbl(fruit_prices, "Price", "Fruit")
+```
+
+```{r, echo=FALSE, results='asis'}
+knitr::kable(fruit_prices[c(3, 4, 6),])
+```
+
+## Example Analysis
+
+```{r, echo=FALSE, eval=FALSE}
+knitr::opts_knit$set(root.dir = "~/Developer/R/Pop/warppipe/")
+```
+
+Our analysis begins with the following data sets:
+
+- `gates_tax` The taxonomy for each OTU according to NCBI.
+- `gates_blastn` The BLAST results when the OTUs were queried against the 
+SILVA^[Quast, Christian, et al. "The SILVA ribosomal RNA gene database project: 
+improved data processing and web-based tools." Nucleic acids research (2012): 
+gks1219.] database.
+    - Normally this would be read into R with `read_blast_m9()`.
+- `silva_typestrainNR_taxonomy` The taxonomy for each organism in the SILVA 
+database.
+
+All of the above data sets are distributed with Warppipe.
+
+The Warppipe workflow is heavily dependent on the pipe operator (`%>%`) from
+dplyr.
+
+```{r, results='hide', message = FALSE}
+library(warppipe)
+library(dplyr)
+```
+
+First let's read in a fasta file from the study. You can find this fasta file in
+the `/data-raw` directory of this repository^[https://github.com/seankross/warppipe]. 
+After we read file the file in we'll calculate the length of each
+sequence.
+
+```{r}
+# Read in fasta file
+gates_fasta <- seq_tbl("gates1000_16s.fasta")
+
+# Calculate length of sequences
+gates_fasta <- gates_fasta %>% 
+  mutate(sequence_length = nchar(as.character(Sequence)))
+
+# Cast description names as integers for joins later. Descriptions do not have
+# to be numbers.
+gates_fasta$Description <- as.integer(as.character(gates_fasta$Description))
+```
+
+Next we'll combine the data from our BLAST query with the sequence lengths we
+just calculated. We're going to create some new columns: `total_perc_align` is
+the length of the sequence alignment divided by the length of the sequence.
+The column `bitscore_ratio` is the bit score assigned by BLAST divided by the
+maximum possible bit score for a sequence (2 * the length of the sequence.)
+
+```{r}
+gates_blast_data <- gates_blastn %>%
+  # Select columns relevant for analysis
+  select(Query_id, Subject_id, percent_identity, alignment_length, bit_score) %>%
+  # Add sequence lengths to table
+  left_join(gates_fasta, by = c("Query_id" = "Description")) %>%
+  # Add new columns
+  mutate(total_perc_align = alignment_length / sequence_length,
+         bitscore_ratio = bit_score / (sequence_length * 2)) %>%
+  # Purge non-hits & sequences
+  filter(!is.na(sequence_length)) %>% select(-Sequence)
+```
+
+Now that we've calculated all of the variables we're interested in, let's create
+some filters so we're only working with BLAST hits that have decent quality.
+
+```{r}
+# Create some rules
+gates_blast_data <- gates_blast_data %>%
+  filter(percent_identity > 90, total_perc_align > .7, bitscore_ratio > .7)
+```
+
+Now that we've narrowed down which OTUs we want to analyze, we need to 
+taxonomies from two different data sets: the NCBI taxonomy and the Silva 
+taxonomy.
+
+```{r}
+# Make Silva Taxonomy
+gates_silva <- gates_blast_data %>%
+  # Bring in Silva taxonomy data
+  left_join(silva_typestrainNR_taxonomy, by = c("Subject_id" = "Accession_Number")) %>%
+  # Add a Source column, just to keep track of the origin of this taxonomy.
+  mutate(Source = "Silva") %>%
+  # Order the columns so that they will match up with the NCBI taxonomy
+  select(Query_id, Subject_id, Source, 
+         Kingdom, Phylum, Class, Order,  Family, Genus, Species,
+         percent_identity, alignment_length, bit_score, sequence_length, 
+         total_perc_align, bitscore_ratio)
+
+# Make NCBI Taxonomy
+gates_NCBI <- gates_blast_data %>%
+  # Bring in NCBI taxonomy data
+  left_join(gates_tax, by = c("Query_id" = "OTU")) %>%
+  # The Silva data has Subject_id as a column and we want to combine the rows
+  # later, so we'll have to fill that column with NA as a place holder. Once
+  # again we're making a Source column to keep track of the origin of this
+  # taxonomy
+  mutate(Subject_id = NA, Source = "NCBI") %>%
+  # Lining up the columns so we can combine rows soon
+  select(Query_id, Subject_id, Source, 
+         Kingdom, Phylum, Class, Order,  Family, Genus, Species,
+         percent_identity, alignment_length, bit_score, sequence_length, 
+         total_perc_align, bitscore_ratio)
+```
+
+We're now going to combine the two taxonomy tables and group them by Query_id,
+only looking for groups of Query_ids where there are different Genus' within
+each group.
+
+```{r}
+# Combine tables
+gates_joint <- rbind(gates_silva, gates_NCBI)
+
+# Warp!
+gates_warped <- warp_tbl(gates_joint, "Query_id", "Genus")
+```
+
+Now we need to explore what we've got in `gates_warped`. First we should filter
+out the top scoring hits in each heterogeneous group. Then we'll recombine those
+top hits and arrange them by OTU so we can see if there are any interesting
+differences between taxonomies.
+
+```{r}
+gates_warped_Silva <- gates_warped %>%
+  # Get only Silva taxonomies
+  filter(Source == "Silva") %>%
+  # Get the top taxonomy for each OTU according to highest bit score
+  group_by(Query_id) %>%
+  arrange(desc(bit_score)) %>%
+  slice(1)
+
+gates_warped_NCBI <- gates_warped %>%
+  # Get only NCBI taxonomies
+  filter(Source == "NCBI") %>%
+  # Get the top taxonomy for each OTU according to highest bit score
+  group_by(Query_id) %>%
+  arrange(desc(bit_score)) %>%
+  slice(1)
+
+# Combine slices and examine
+gates_sliced <- rbind(gates_warped_NCBI, gates_warped_Silva) %>%
+  group_by(Query_id) %>%
+  arrange(desc(bit_score))
+```
+
+Let's take a look at `gates_sliced`. Though some entries are just naming 
+differences or Shigella/E.coli false positives, some OTUs (Query_ids) are
+interesting, particularly 14032:
+
+```{r, echo=FALSE, results='asis'}
+gates_display <- gates_sliced %>%
+  select(Query_id, Source, Genus, Species, percent_identity, bit_score, total_perc_align)
+knitr::kable(gates_display)
+```
